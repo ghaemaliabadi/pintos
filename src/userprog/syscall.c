@@ -337,6 +337,49 @@ syscall_handler (struct intr_frame *f)
 
 #endif
 
+  /* Encryption system calls */
+  case SYS_ENCRYPT_FILE: // 20
+    {
+      char *filename;
+      char *password;
+      bool return_code;
+      
+      memread_user(f->esp + 4, &filename, sizeof(filename));
+      memread_user(f->esp + 8, &password, sizeof(password));
+      
+      return_code = sys_encrypt_file(filename, password);
+      f->eax = return_code;
+      break;
+    }
+    
+  case SYS_IS_FILE_ENCRYPTED: // 21
+    {
+      char *filename;
+      bool return_code;
+      
+      memread_user(f->esp + 4, &filename, sizeof(filename));
+      
+      return_code = sys_is_file_encrypted(filename);
+      f->eax = return_code;
+      break;
+    }
+    
+  case SYS_CHANGE_FILE_PASSWORD: // 22
+    {
+      char *filename;
+      char *old_password;
+      char *new_password;
+      bool return_code;
+      
+      memread_user(f->esp + 4, &filename, sizeof(filename));
+      memread_user(f->esp + 8, &old_password, sizeof(old_password));
+      memread_user(f->esp + 12, &new_password, sizeof(new_password));
+      
+      return_code = sys_change_file_password(filename, old_password, new_password);
+      f->eax = return_code;
+      break;
+    }
+
 
   /* unhandled case */
   default:
@@ -916,3 +959,75 @@ int sys_inumber(int fd)
 }
 
 #endif
+
+/* Encryption system call implementations */
+bool 
+sys_encrypt_file (const char *filename, const char *password)
+{
+  if (filename == NULL || password == NULL)
+    return false;
+    
+  lock_acquire (&filesys_lock);
+  
+  struct file *file = filesys_open(filename);
+  if (file == NULL) {
+    lock_release (&filesys_lock);
+    return false;
+  }
+  
+  struct inode *inode = file_get_inode(file);
+  bool result = inode_set_encrypted(inode, password);
+  
+  file_close(file);
+  lock_release (&filesys_lock);
+  
+  return result;
+}
+
+bool 
+sys_is_file_encrypted (const char *filename)
+{
+  if (filename == NULL)
+    return false;
+    
+  lock_acquire (&filesys_lock);
+  
+  struct file *file = filesys_open(filename);
+  if (file == NULL) {
+    lock_release (&filesys_lock);
+    return false;
+  }
+  
+  struct inode *inode = file_get_inode(file);
+  bool result = inode_is_encrypted(inode);
+  
+  file_close(file);
+  lock_release (&filesys_lock);
+  
+  return result;
+}
+
+bool 
+sys_change_file_password (const char *filename, 
+                          const char *old_password, 
+                          const char *new_password)
+{
+  if (filename == NULL || old_password == NULL || new_password == NULL)
+    return false;
+    
+  lock_acquire (&filesys_lock);
+  
+  struct file *file = filesys_open(filename);
+  if (file == NULL) {
+    lock_release (&filesys_lock);
+    return false;
+  }
+  
+  struct inode *inode = file_get_inode(file);
+  bool result = inode_change_password(inode, old_password, new_password);
+  
+  file_close(file);
+  lock_release (&filesys_lock);
+  
+  return result;
+}

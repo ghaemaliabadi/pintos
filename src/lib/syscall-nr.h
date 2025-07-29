@@ -28,7 +28,12 @@ enum
     SYS_MKDIR,                  /* Create a directory. */
     SYS_READDIR,                /* Reads a directory entry. */
     SYS_ISDIR,                  /* Tests if a fd represents a directory. */
-    SYS_INUMBER                 /* Returns the inode number for a fd. */
+    SYS_INUMBER,                /* Returns the inode number for a fd. */
+
+    /* Encryption system calls. */
+    SYS_ENCRYPT_FILE,           /* Encrypt a file with password. */
+    SYS_IS_FILE_ENCRYPTED,      /* Check if file is encrypted. */
+    SYS_CHANGE_FILE_PASSWORD    /* Change file password. */
   };
 
 #endif /* lib/syscall-nr.h */

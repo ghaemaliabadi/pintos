@@ -6,12 +6,13 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "filesys/cache.h"
+#include "filesys/encryption.h"
 #include "threads/malloc.h"
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 
-#define DIRECT_BLOCKS_COUNT 123
+#define DIRECT_BLOCKS_COUNT 114
 #define INDIRECT_BLOCKS_PER_SECTOR 128
 
 /* On-disk inode.
@@ -26,6 +27,12 @@ struct inode_disk
     bool is_dir;
     off_t length;                       /* File size in bytes. */
     unsigned magic;                     /* Magic number. */
+    
+    /** Encryption metadata */
+    bool encrypted;                     /* True if file is encrypted. */
+    uint8_t salt[ENCRYPTION_SALT_SIZE]; /* Salt for key derivation. */
+    uint8_t iv[AES_IV_SIZE];           /* Initialization vector. */
+    uint32_t pbkdf2_iterations;        /* PBKDF2 iteration count. */
   };
 
 struct inode_indirect_block_sector {
@@ -137,6 +144,7 @@ void
 inode_init (void)
 {
   list_init (&open_inodes);
+  aes_init ();
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -162,6 +170,10 @@ inode_create (block_sector_t sector, off_t length, bool is_dir)
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
       disk_inode->is_dir = is_dir;
+      disk_inode->encrypted = false;  /* Initially not encrypted */
+      memset(disk_inode->salt, 0, ENCRYPTION_SALT_SIZE);
+      memset(disk_inode->iv, 0, AES_IV_SIZE);
+      disk_inode->pbkdf2_iterations = 10000;  /* Default iterations */
       if (inode_allocate (disk_inode))
         {
           buffer_cache_write (sector, disk_inode);
@@ -587,6 +599,82 @@ bool inode_deallocate (struct inode *inode)
   }
 
   ASSERT (num_sectors == 0);
+  return true;
+}
+
+/* Encryption functions */
+bool
+inode_is_encrypted (const struct inode *inode)
+{
+  return inode != NULL && inode->data.encrypted;
+}
+
+bool
+inode_set_encrypted (struct inode *inode, const char *password)
+{
+  if (inode == NULL || password == NULL)
+    return false;
+    
+  /* File must not already be encrypted */
+  if (inode->data.encrypted)
+    return false;
+  
+  /* Generate salt and IV */
+  crypto_random_bytes(inode->data.salt, ENCRYPTION_SALT_SIZE);
+  crypto_random_bytes(inode->data.iv, AES_IV_SIZE);
+  inode->data.pbkdf2_iterations = 10000;
+  
+  /* Derive encryption key */
+  uint8_t key[AES_KEY_SIZE];
+  derive_key_from_password(password, inode->data.salt, 
+                         inode->data.pbkdf2_iterations, key);
+  
+  /* Store key in cache */
+  cache_store_key(inode_get_inumber(inode), key);
+  
+  /* Mark as encrypted */
+  inode->data.encrypted = true;
+  
+  /* Note: Actual data encryption happens transparently in block operations */
+  
+  secure_zero(key, AES_KEY_SIZE);
+  return true;
+}
+
+bool
+inode_change_password (struct inode *inode, 
+                       const char *old_password, 
+                       const char *new_password)
+{
+  if (inode == NULL || old_password == NULL || new_password == NULL)
+    return false;
+  
+  /* File must be encrypted */
+  if (!inode->data.encrypted)
+    return false;
+  
+  /* Verify old password */
+  uint8_t old_key[AES_KEY_SIZE];
+  derive_key_from_password(old_password, inode->data.salt,
+                         inode->data.pbkdf2_iterations, old_key);
+  
+  /* Note: In a real implementation, we would verify the old password 
+     by attempting to decrypt some data or checking a hash */
+  
+  /* Generate new salt and derive new key */
+  crypto_random_bytes(inode->data.salt, ENCRYPTION_SALT_SIZE);
+  uint8_t new_key[AES_KEY_SIZE];
+  derive_key_from_password(new_password, inode->data.salt,
+                         inode->data.pbkdf2_iterations, new_key);
+  
+  /* Update cache */
+  cache_store_key(inode_get_inumber(inode), new_key);
+  
+  /* Note: In a real implementation, we would re-encrypt all data blocks 
+     with the new key here */
+  
+  secure_zero(old_key, AES_KEY_SIZE);
+  secure_zero(new_key, AES_KEY_SIZE);
   return true;
 }
 

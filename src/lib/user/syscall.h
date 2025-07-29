@@ -45,4 +45,9 @@ bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
 bool isdir (int fd);
 int inumber (int fd);
 
+/* Encryption functions. */
+bool encrypt_file (const char *filename, const char *password);
+bool is_file_encrypted (const char *filename);
+bool change_file_password (const char *filename, const char *old_password, const char *new_password);
+
 #endif /* lib/user/syscall.h */

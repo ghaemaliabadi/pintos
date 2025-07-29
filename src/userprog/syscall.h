@@ -12,4 +12,9 @@ void sys_exit (int);
 bool sys_munmap (mmapid_t);
 #endif
 
+/* Encryption system calls */
+bool sys_encrypt_file (const char *filename, const char *password);
+bool sys_is_file_encrypted (const char *filename);
+bool sys_change_file_password (const char *filename, const char *old_password, const char *new_password);
+
 #endif /* userprog/syscall.h */

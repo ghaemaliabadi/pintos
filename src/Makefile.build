@@ -52,6 +52,7 @@ lib/kernel_SRC += lib/kernel/list.c	# Doubly-linked lists.
 lib/kernel_SRC += lib/kernel/bitmap.c	# Bitmaps.
 lib/kernel_SRC += lib/kernel/hash.c	# Hash tables.
 lib/kernel_SRC += lib/kernel/console.c	# printf(), putchar().
+lib/kernel_SRC += lib/kernel/crypto.c	# Cryptographic primitives.
 
 # User process code.
 userprog_SRC  = userprog/process.c	# Process loading.
@@ -74,6 +75,7 @@ filesys_SRC += filesys/cache.c		# Buffer Cache.
 filesys_SRC += filesys/directory.c	# Directories.
 filesys_SRC += filesys/inode.c		# File headers.
 filesys_SRC += filesys/fsutil.c		# Utilities.
+filesys_SRC += filesys/encryption.c	# File encryption.
 
 SOURCES = $(foreach dir,$(KERNEL_SUBDIRS),$($(dir)_SRC))
 OBJECTS = $(patsubst %.c,%.o,$(patsubst %.S,%.o,$(SOURCES)))

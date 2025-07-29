@@ -182,3 +182,21 @@ inumber (int fd)
 {
   return syscall1 (SYS_INUMBER, fd);
 }
+
+bool
+encrypt_file (const char *filename, const char *password)
+{
+  return syscall2 (SYS_ENCRYPT_FILE, filename, password);
+}
+
+bool
+is_file_encrypted (const char *filename)
+{
+  return syscall1 (SYS_IS_FILE_ENCRYPTED, filename);
+}
+
+bool
+change_file_password (const char *filename, const char *old_password, const char *new_password)
+{
+  return syscall3 (SYS_CHANGE_FILE_PASSWORD, filename, old_password, new_password);
+}
