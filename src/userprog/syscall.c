@@ -69,6 +69,11 @@ bool sys_isdir(int fd);
 int sys_inumber(int fd);
 #endif
 
+/* Encryption system calls */
+bool sys_encrypt_file(int fd, const char *password);
+bool sys_decrypt_file(int fd, const char *password);
+bool sys_is_encrypted(int fd);
+
 struct lock filesys_lock;
 
 void
@@ -336,6 +341,45 @@ syscall_handler (struct intr_frame *f)
     }
 
 #endif
+
+  case SYS_ENCRYPT_FILE: // 20
+    {
+      int fd;
+      const char* password;
+      bool return_code;
+
+      memread_user(f->esp + 4, &fd, sizeof(fd));
+      memread_user(f->esp + 8, &password, sizeof(password));
+      
+      return_code = sys_encrypt_file(fd, password);
+      f->eax = return_code;
+      break;
+    }
+
+  case SYS_DECRYPT_FILE: // 21
+    {
+      int fd;
+      const char* password;
+      bool return_code;
+
+      memread_user(f->esp + 4, &fd, sizeof(fd));
+      memread_user(f->esp + 8, &password, sizeof(password));
+      
+      return_code = sys_decrypt_file(fd, password);
+      f->eax = return_code;
+      break;
+    }
+
+  case SYS_IS_ENCRYPTED: // 22
+    {
+      int fd;
+      bool return_code;
+
+      memread_user(f->esp + 4, &fd, sizeof(fd));
+      return_code = sys_is_encrypted(fd);
+      f->eax = return_code;
+      break;
+    }
 
 
   /* unhandled case */
@@ -916,3 +960,75 @@ int sys_inumber(int fd)
 }
 
 #endif
+
+/* Encryption system call implementations */
+
+bool sys_encrypt_file(int fd, const char *password) {
+  if (!password) return false;
+  
+  /* Validate password pointer */
+  check_user((const uint8_t*)password);
+  
+  lock_acquire(&filesys_lock);
+  
+  struct file_desc* file_d = find_file_desc(thread_current(), fd, FD_FILE);
+  if (!file_d) {
+    lock_release(&filesys_lock);
+    return false;
+  }
+  
+  struct inode *inode = file_get_inode(file_d->file);
+  bool result = false;
+  
+  if (inode && !inode_is_directory(inode)) {
+    result = inode_set_encryption(inode, password);
+  }
+  
+  lock_release(&filesys_lock);
+  return result;
+}
+
+bool sys_decrypt_file(int fd, const char *password) {
+  if (!password) return false;
+  
+  /* Validate password pointer */
+  check_user((const uint8_t*)password);
+  
+  lock_acquire(&filesys_lock);
+  
+  struct file_desc* file_d = find_file_desc(thread_current(), fd, FD_FILE);
+  if (!file_d) {
+    lock_release(&filesys_lock);
+    return false;
+  }
+  
+  struct inode *inode = file_get_inode(file_d->file);
+  bool result = false;
+  
+  if (inode && inode_is_encrypted(inode)) {
+    result = inode_unlock_encryption(inode, password);
+  }
+  
+  lock_release(&filesys_lock);
+  return result;
+}
+
+bool sys_is_encrypted(int fd) {
+  lock_acquire(&filesys_lock);
+  
+  struct file_desc* file_d = find_file_desc(thread_current(), fd, FD_FILE);
+  if (!file_d) {
+    lock_release(&filesys_lock);
+    return false;
+  }
+  
+  struct inode *inode = file_get_inode(file_d->file);
+  bool result = false;
+  
+  if (inode) {
+    result = inode_is_encrypted(inode);
+  }
+  
+  lock_release(&filesys_lock);
+  return result;
+}

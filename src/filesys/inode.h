@@ -22,4 +22,10 @@ off_t inode_length (const struct inode *);
 bool inode_is_directory (const struct inode *);
 bool inode_is_removed (const struct inode *);
 
+/* Encryption-related functions */
+bool inode_set_encryption (struct inode *, const char *password);
+bool inode_is_encrypted (const struct inode *);
+bool inode_unlock_encryption (struct inode *, const char *password);
+void inode_lock_encryption (struct inode *);
+
 #endif /* filesys/inode.h */

@@ -6,12 +6,13 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "filesys/cache.h"
+#include "filesys/encryption.h"
 #include "threads/malloc.h"
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 
-#define DIRECT_BLOCKS_COUNT 123
+#define DIRECT_BLOCKS_COUNT 118
 #define INDIRECT_BLOCKS_PER_SECTOR 128
 
 /* On-disk inode.
@@ -26,6 +27,9 @@ struct inode_disk
     bool is_dir;
     off_t length;                       /* File size in bytes. */
     unsigned magic;                     /* Magic number. */
+    
+    /* Encryption metadata (20 bytes) */
+    struct encryption_metadata encryption;
   };
 
 struct inode_indirect_block_sector {
@@ -35,6 +39,10 @@ struct inode_indirect_block_sector {
 static bool inode_allocate (struct inode_disk *disk_inode);
 static bool inode_reserve (struct inode_disk *disk_inode, off_t length);
 static bool inode_deallocate (struct inode *inode);
+
+/* Forward declarations for encryption-aware buffer cache operations */
+static void encrypted_buffer_cache_read (struct inode *inode, block_sector_t sector_idx, void *buffer);
+static void encrypted_buffer_cache_write (struct inode *inode, block_sector_t sector_idx, const void *buffer);
 
 /* Returns the number of sectors to allocate for an inode SIZE
    bytes long. */
@@ -59,6 +67,7 @@ struct inode
     bool removed;                       /* True if deleted, false otherwise. */
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
     struct inode_disk data;             /* Inode content. */
+    struct encryption_context enc_ctx;  /* Encryption context for this inode. */
   };
 
 static block_sector_t
@@ -137,6 +146,7 @@ void
 inode_init (void)
 {
   list_init (&open_inodes);
+  encryption_init ();
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -162,6 +172,11 @@ inode_create (block_sector_t sector, off_t length, bool is_dir)
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
       disk_inode->is_dir = is_dir;
+      
+      /* Initialize encryption metadata - file starts unencrypted */
+      disk_inode->encryption.is_encrypted = false;
+      memset(disk_inode->encryption.salt, 0, ENCRYPTION_SALT_SIZE);
+      
       if (inode_allocate (disk_inode))
         {
           buffer_cache_write (sector, disk_inode);
@@ -206,6 +221,10 @@ inode_open (block_sector_t sector)
   inode->removed = false;
 
   buffer_cache_read (inode->sector, &inode->data);
+  
+  /* Initialize encryption context */
+  encryption_context_init(&inode->enc_ctx);
+  
   return inode;
 }
 
@@ -290,7 +309,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
         {
           /* Read full sector directly into caller's buffer. */
-          buffer_cache_read (sector_idx, buffer + bytes_read);
+          encrypted_buffer_cache_read (inode, sector_idx, buffer + bytes_read);
         }
       else
         {
@@ -302,7 +321,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
               if (bounce == NULL)
                 break;
             }
-          buffer_cache_read (sector_idx, bounce);
+          encrypted_buffer_cache_read (inode, sector_idx, bounce);
           memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
         }
 
@@ -363,7 +382,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
         {
           /* Write full sector directly to disk. */
-          buffer_cache_write (sector_idx, buffer + bytes_written);
+          encrypted_buffer_cache_write (inode, sector_idx, buffer + bytes_written);
         }
       else
         {
@@ -379,11 +398,11 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
              we're writing, then we need to read in the sector
              first.  Otherwise we start with a sector of all zeros. */
           if (sector_ofs > 0 || chunk_size < sector_left)
-            buffer_cache_read (sector_idx, bounce);
+            encrypted_buffer_cache_read (inode, sector_idx, bounce);
           else
             memset (bounce, 0, BLOCK_SECTOR_SIZE);
           memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
-          buffer_cache_write (sector_idx, bounce);
+          encrypted_buffer_cache_write (inode, sector_idx, bounce);
         }
 
       /* Advance. */
@@ -435,6 +454,57 @@ bool
 inode_is_removed (const struct inode *inode)
 {
   return inode->removed;
+}
+
+/* Encryption-aware buffer cache operations */
+
+/* Read a sector, decrypting if necessary */
+static void
+encrypted_buffer_cache_read (struct inode *inode, block_sector_t sector_idx, void *buffer)
+{
+  if (!inode->data.encryption.is_encrypted || !inode->enc_ctx.key_valid)
+    {
+      /* File is not encrypted or key not available - use normal read */
+      buffer_cache_read (sector_idx, buffer);
+    }
+  else
+    {
+      /* File is encrypted - read and decrypt */
+      uint8_t encrypted_buffer[BLOCK_SECTOR_SIZE];
+      buffer_cache_read (sector_idx, encrypted_buffer);
+      
+      if (!decrypt_sector (encrypted_buffer, buffer, &inode->enc_ctx))
+        {
+          /* Decryption failed - fill with zeros or handle error */
+          memset (buffer, 0, BLOCK_SECTOR_SIZE);
+        }
+    }
+}
+
+/* Write a sector, encrypting if necessary */
+static void
+encrypted_buffer_cache_write (struct inode *inode, block_sector_t sector_idx, const void *buffer)
+{
+  if (!inode->data.encryption.is_encrypted || !inode->enc_ctx.key_valid)
+    {
+      /* File is not encrypted or key not available - use normal write */
+      buffer_cache_write (sector_idx, buffer);
+    }
+  else
+    {
+      /* File is encrypted - encrypt and write */
+      uint8_t encrypted_buffer[BLOCK_SECTOR_SIZE];
+      
+      if (encrypt_sector (buffer, encrypted_buffer, &inode->enc_ctx))
+        {
+          buffer_cache_write (sector_idx, encrypted_buffer);
+        }
+      else
+        {
+          /* Encryption failed - this is a serious error */
+          PANIC ("Failed to encrypt sector");
+        }
+    }
 }
 
 static
@@ -588,5 +658,47 @@ bool inode_deallocate (struct inode *inode)
 
   ASSERT (num_sectors == 0);
   return true;
+}
+
+/* Encryption-related functions */
+
+/* Set encryption for a file with given password */
+bool inode_set_encryption (struct inode *inode, const char *password) {
+  if (!inode || !password || inode->data.is_dir) {
+    return false;
+  }
+  
+  /* Generate salt for key derivation */
+  generate_random_salt(inode->data.encryption.salt);
+  inode->data.encryption.is_encrypted = true;
+  
+  /* Update the on-disk inode */
+  buffer_cache_write(inode->sector, &inode->data);
+  
+  /* Set up encryption context */
+  return encryption_context_set_password(&inode->enc_ctx, password, 
+                                       &inode->data.encryption);
+}
+
+/* Check if file is encrypted */
+bool inode_is_encrypted (const struct inode *inode) {
+  if (!inode) return false;
+  return inode->data.encryption.is_encrypted;
+}
+
+/* Unlock encryption with password */
+bool inode_unlock_encryption (struct inode *inode, const char *password) {
+  if (!inode || !password || !inode->data.encryption.is_encrypted) {
+    return false;
+  }
+  
+  return encryption_context_set_password(&inode->enc_ctx, password,
+                                       &inode->data.encryption);
+}
+
+/* Lock encryption (clear keys from memory) */
+void inode_lock_encryption (struct inode *inode) {
+  if (!inode) return;
+  encryption_context_clear(&inode->enc_ctx);
 }
 
